@@ -1,4 +1,4 @@
-# Package.XML Dependency Visualizer
+# ROS-package-visualizer
 
 A minimal web-based tool to visualize ROS 2 package dependencies as a tree structure with ROS Humble integration.
 
@@ -132,4 +132,3 @@ python3 app.py --port 5001
 - Graphs are optimized with hierarchical layout
 - Physics simulation helps arrange nodes automatically
 - All communication is done client-side when possible
-# ROS-package-visualizer
