@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Package.XML Visualizer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Package.XML Visualizer</h1>
+            <p>Visualize ROS and non-ROS package dependencies</p>
+        </div>
+
+        <div class="input-section">
+            <input
+                type="text"
+                id="urlInput"
+                class="url-input"
+                placeholder="https://github.com/user/repo/blob/main/package.xml"
+                value="https://github.com/BehaviorTree/BehaviorTree.CPP/blob/master/package.xml"
+            >
+            <button id="visualizeBtn" class="visualize-btn">Visualize</button>
+        </div>
+
+        <div id="loading" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            Loading...
+        </div>
+
+        <div id="error" class="error" style="display: none;"></div>
+
+        <div id="content" style="display: none;">
+            <div class="info-panel">
+                <h2 id="packageName"></h2>
+                <p id="packageDescription"></p>
+                <p><strong>Maintainer:</strong> <span id="packageMaintainer"></span></p>
+
+                <div class="stats">
+                    <div class="stat">
+                        <span class="stat-label">ROS Dependencies:</span>
+                        <span class="stat-value stat-ros" id="rosCount">-</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Non-ROS Dependencies:</span>
+                        <span class="stat-value stat-non-ros" id="nonRosCount">-</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Total:</span>
+                        <span class="stat-value" id="totalCount">-</span>
+                    </div>
+                </div>
+
+                <div class="legend">
+                    <h3>Legend</h3>
+                    <div class="legend-item">
+                        <div class="legend-color legend-ros"></div>
+                        <span>ROS Dependencies</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color legend-non-ros"></div>
+                        <span>Non-ROS Dependencies</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tree-section">
+                <div id="tree"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('visualizeBtn').addEventListener('click', visualize);
+        document.getElementById('urlInput').addEventListener('keypress', function(event) {
+            if (event.key === 'Enter') {
+                visualize();
+            }
+        });
+
+        async function visualize() {
+            const url = document.getElementById('urlInput').value.trim();
+
+            if (!url) {
+                showError('Please enter a GitHub URL');
+                return;
+            }
+
+            showLoading(true);
+            hideError();
+
+            try {
+                const response = await fetch('/api/visualize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to visualize');
+                }
+
+                displayResults(data);
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function displayResults(data) {
+            const pkg = data.package;
+            const graph = data.graph;
+
+            document.getElementById('packageName').textContent = pkg.name + ' v' + pkg.version;
+            document.getElementById('packageDescription').textContent = pkg.description || 'No description';
+            document.getElementById('packageMaintainer').textContent = pkg.maintainer || 'Unknown';
+            document.getElementById('rosCount').textContent = graph.stats.ros_count;
+            document.getElementById('nonRosCount').textContent = graph.stats.non_ros_count;
+            document.getElementById('totalCount').textContent = graph.stats.total;
+
+            renderTree(graph);
+            document.getElementById('content').style.display = 'grid';
+        }
+
+        function renderTree(graphData) {
+            const treeContainer = document.getElementById('tree');
+            treeContainer.innerHTML = '';
+
+            const nodes = graphData.nodes;
+            const mainNode = nodes[0];
+            const depNodes = nodes.slice(1);
+
+            // Create root
+            const root = document.createElement('div');
+            root.className = 'tree-item root';
+            root.innerHTML = `<div class="tree-label">${mainNode.label}</div>`;
+
+            const depContainer = document.createElement('div');
+            depContainer.className = 'tree-children';
+
+            // Separate by ROS type and dependency type
+            const rosNodes = depNodes.filter(n => n.color === '#d32f2f');
+            const nonRosNodes = depNodes.filter(n => n.color === '#1976d2');
+
+            // Helper to get type label
+            function getTypeLabel(type) {
+                const typeLabels = {
+                    'depend': 'build & runtime',
+                    'exec_depend': 'runtime only',
+                    'test_depend': 'test only',
+                    'buildtool_depend': 'build tool',
+                    'build_depend': 'build only',
+                    'run_depend': 'runtime'
+                };
+                return typeLabels[type] || type;
+            }
+
+            // Group nodes by type
+            function groupByType(nodeArray) {
+                const groups = {};
+                nodeArray.forEach(node => {
+                    const type = node.type || 'depend';
+                    if (!groups[type]) groups[type] = [];
+                    groups[type].push(node);
+                });
+                return groups;
+            }
+
+            // Create node element
+            function createNodeElement(node, typeLabel) {
+                const item = document.createElement('div');
+                item.className = node.color === '#d32f2f' ? 'tree-item ros-dep' : 'tree-item non-ros-dep';
+
+                let labelHtml = `<div class="tree-label">${node.label}</div>`;
+                if (node.in_humble && node.distro_link) {
+                    labelHtml += `<a href="${node.distro_link}" target="_blank" class="distro-link" title="View in ROS Humble distribution">↗</a>`;
+                }
+
+                item.innerHTML = `
+                    <div class="tree-connector"></div>
+                    <div class="tree-dot ${node.color === '#d32f2f' ? 'ros' : 'non-ros'}"></div>
+                    <div class="tree-content">
+                        <div class="tree-label-wrapper">
+                            ${labelHtml}
+                        </div>
+                        <div class="tree-type">${typeLabel}</div>
+                    </div>
+                `;
+                return item;
+            }
+
+            // Add ROS dependencies
+            if (rosNodes.length > 0) {
+                const rosSection = document.createElement('div');
+                rosSection.className = 'tree-section-title';
+                rosSection.textContent = `ROS Dependencies (${rosNodes.length})`;
+                depContainer.appendChild(rosSection);
+
+                const rosGroups = groupByType(rosNodes);
+                const typeOrder = ['depend', 'buildtool_depend', 'exec_depend', 'test_depend', 'build_depend', 'run_depend'];
+
+                typeOrder.forEach(typeKey => {
+                    if (!rosGroups[typeKey]) return;
+
+                    const typeNodes = rosGroups[typeKey];
+                    typeNodes.forEach((node, index) => {
+                        const typeLabel = getTypeLabel(node.type || 'depend');
+                        const item = createNodeElement(node, typeLabel);
+                        depContainer.appendChild(item);
+                    });
+                });
+            }
+
+            // Add non-ROS dependencies
+            if (nonRosNodes.length > 0) {
+                const nonRosSection = document.createElement('div');
+                nonRosSection.className = 'tree-section-title';
+                nonRosSection.textContent = `Non-ROS Dependencies (${nonRosNodes.length})`;
+                depContainer.appendChild(nonRosSection);
+
+                const nonRosGroups = groupByType(nonRosNodes);
+                const typeOrder = ['depend', 'buildtool_depend', 'exec_depend', 'test_depend', 'build_depend', 'run_depend'];
+
+                typeOrder.forEach(typeKey => {
+                    if (!nonRosGroups[typeKey]) return;
+
+                    const typeNodes = nonRosGroups[typeKey];
+                    typeNodes.forEach((node, index) => {
+                        const typeLabel = getTypeLabel(node.type || 'depend');
+                        const item = createNodeElement(node, typeLabel);
+                        depContainer.appendChild(item);
+                    });
+                });
+            }
+
+            root.appendChild(depContainer);
+            treeContainer.appendChild(root);
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            document.getElementById('content').style.display = 'none';
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        // Load on startup
+        window.addEventListener('load', visualize);
+    </script>
+</body>
+</html>
