@@ -32,36 +32,14 @@
         <div id="error" class="error" style="display: none;"></div>
 
         <div id="content" style="display: none;">
-            <div class="info-panel">
-                <h2 id="packageName"></h2>
-                <p id="packageDescription"></p>
-                <p><strong>Maintainer:</strong> <span id="packageMaintainer"></span></p>
-
-                <div class="stats">
-                    <div class="stat">
-                        <span class="stat-label">ROS Dependencies:</span>
-                        <span class="stat-value stat-ros" id="rosCount">-</span>
+            <div class="package-header">
+                <div class="package-info">
+                    <div class="package-title-row">
+                        <h2 id="packageName"></h2>
+                        <span class="stat-ros" id="rosCount">-</span>
+                        <span class="stat-label">ROS dependencies</span>
                     </div>
-                    <div class="stat">
-                        <span class="stat-label">Non-ROS Dependencies:</span>
-                        <span class="stat-value stat-non-ros" id="nonRosCount">-</span>
-                    </div>
-                    <div class="stat">
-                        <span class="stat-label">Total:</span>
-                        <span class="stat-value" id="totalCount">-</span>
-                    </div>
-                </div>
-
-                <div class="legend">
-                    <h3>Legend</h3>
-                    <div class="legend-item">
-                        <div class="legend-color legend-ros"></div>
-                        <span>ROS Dependencies</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-color legend-non-ros"></div>
-                        <span>Non-ROS Dependencies</span>
-                    </div>
+                    <p id="packageDescription"></p>
                 </div>
             </div>
 
@@ -72,6 +50,10 @@
     </div>
 
     <script>
+        // Global state for expandable tree
+        let expandedState = {};
+        let visitedPackages = new Set();
+
         document.getElementById('visualizeBtn').addEventListener('click', visualize);
         document.getElementById('urlInput').addEventListener('keypress', function(event) {
             if (event.key === 'Enter') {
@@ -89,6 +71,9 @@
 
             showLoading(true);
             hideError();
+            // Reset state for new visualization
+            expandedState = {};
+            visitedPackages.clear();
 
             try {
                 const response = await fetch('/api/visualize', {
@@ -117,13 +102,10 @@
 
             document.getElementById('packageName').textContent = pkg.name + ' v' + pkg.version;
             document.getElementById('packageDescription').textContent = pkg.description || 'No description';
-            document.getElementById('packageMaintainer').textContent = pkg.maintainer || 'Unknown';
             document.getElementById('rosCount').textContent = graph.stats.ros_count;
-            document.getElementById('nonRosCount').textContent = graph.stats.non_ros_count;
-            document.getElementById('totalCount').textContent = graph.stats.total;
 
             renderTree(graph);
-            document.getElementById('content').style.display = 'grid';
+            document.getElementById('content').style.display = 'flex';
         }
 
         function renderTree(graphData) {
@@ -170,14 +152,30 @@
                 return groups;
             }
 
-            // Create node element
+            // Create node element with expand icon for ROS packages
             function createNodeElement(node, typeLabel) {
                 const item = document.createElement('div');
                 item.className = node.color === '#d32f2f' ? 'tree-item ros-dep' : 'tree-item non-ros-dep';
+                item.dataset.packageName = node.label;
 
                 let labelHtml = `<div class="tree-label">${node.label}</div>`;
+
+                // Add expand icon for ROS packages
+                let expandHtml = '';
+                if (node.color === '#d32f2f') {
+                    expandHtml = `<span class="expand-icon" data-package="${node.label}">+</span>`;
+                }
+
+                // Add distro link if available
+                let distroLinkHtml = '';
                 if (node.in_humble && node.distro_link) {
-                    labelHtml += `<a href="${node.distro_link}" target="_blank" class="distro-link" title="View in ROS Humble distribution">↗</a>`;
+                    distroLinkHtml = `<a href="${node.distro_link}" target="_blank" class="distro-link" title="View in ROS Humble distribution">↗</a>`;
+                }
+
+                // Add repo link if available
+                let repoLinkHtml = '';
+                if (node.repo_url) {
+                    repoLinkHtml = `<a href="${node.repo_url}" target="_blank" class="repo-link" title="View source repository">📁</a>`;
                 }
 
                 item.innerHTML = `
@@ -185,21 +183,30 @@
                     <div class="tree-dot ${node.color === '#d32f2f' ? 'ros' : 'non-ros'}"></div>
                     <div class="tree-content">
                         <div class="tree-label-wrapper">
+                            ${expandHtml}
                             ${labelHtml}
+                            ${repoLinkHtml}
+                            ${distroLinkHtml}
                         </div>
                         <div class="tree-type">${typeLabel}</div>
                     </div>
+                    <div class="tree-children-container" style="display:none;"></div>
                 `;
+
+                // Add click handler for expand icon
+                if (node.color === '#d32f2f') {
+                    const expandIcon = item.querySelector('.expand-icon');
+                    expandIcon.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        toggleExpand(item, node.label);
+                    });
+                }
+
                 return item;
             }
 
-            // Add ROS dependencies
+            // Add ROS dependencies only
             if (rosNodes.length > 0) {
-                const rosSection = document.createElement('div');
-                rosSection.className = 'tree-section-title';
-                rosSection.textContent = `ROS Dependencies (${rosNodes.length})`;
-                depContainer.appendChild(rosSection);
-
                 const rosGroups = groupByType(rosNodes);
                 const typeOrder = ['depend', 'buildtool_depend', 'exec_depend', 'test_depend', 'build_depend', 'run_depend'];
 
@@ -215,30 +222,142 @@
                 });
             }
 
-            // Add non-ROS dependencies
-            if (nonRosNodes.length > 0) {
-                const nonRosSection = document.createElement('div');
-                nonRosSection.className = 'tree-section-title';
-                nonRosSection.textContent = `Non-ROS Dependencies (${nonRosNodes.length})`;
-                depContainer.appendChild(nonRosSection);
-
-                const nonRosGroups = groupByType(nonRosNodes);
-                const typeOrder = ['depend', 'buildtool_depend', 'exec_depend', 'test_depend', 'build_depend', 'run_depend'];
-
-                typeOrder.forEach(typeKey => {
-                    if (!nonRosGroups[typeKey]) return;
-
-                    const typeNodes = nonRosGroups[typeKey];
-                    typeNodes.forEach((node, index) => {
-                        const typeLabel = getTypeLabel(node.type || 'depend');
-                        const item = createNodeElement(node, typeLabel);
-                        depContainer.appendChild(item);
-                    });
-                });
-            }
-
             root.appendChild(depContainer);
             treeContainer.appendChild(root);
+        }
+
+        async function toggleExpand(packageNode, packageName) {
+            const expandIcon = packageNode.querySelector('.expand-icon');
+            const childrenContainer = packageNode.querySelector('.tree-children-container');
+            const isExpanded = expandedState[packageName];
+
+            if (isExpanded) {
+                // Collapse
+                childrenContainer.style.display = 'none';
+                expandIcon.textContent = '+';
+                expandedState[packageName] = false;
+            } else {
+                // Expand
+                if (childrenContainer.children.length === 0) {
+                    // Load children if not already loaded
+                    showLoadingSpinner(childrenContainer);
+
+                    try {
+                        const response = await fetch('/api/get-dependencies', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                package_name: packageName,
+                                visited: Array.from(visitedPackages)
+                            })
+                        });
+
+                        const data = await response.json();
+
+                        if (!response.ok || !data.success) {
+                            showError('Failed to load dependencies for ' + packageName);
+                            childrenContainer.innerHTML = '';
+                            return;
+                        }
+
+                        // Add package to visited set
+                        visitedPackages.add(packageName);
+
+                        // Render dependencies
+                        renderDependencies(childrenContainer, data.dependencies, packageName);
+                    } catch (error) {
+                        childrenContainer.innerHTML = `<div style="color: red; padding: 5px;">Error loading dependencies</div>`;
+                        console.error('Error fetching dependencies:', error);
+                    }
+                }
+
+                childrenContainer.style.display = 'block';
+                expandIcon.textContent = '-';
+                expandedState[packageName] = true;
+            }
+        }
+
+        function showLoadingSpinner(container) {
+            container.innerHTML = '<div class="loading-spinner-small"></div>';
+        }
+
+        function renderDependencies(container, dependencies, parentPackage) {
+            container.innerHTML = '';
+
+            if (dependencies.length === 0) {
+                container.innerHTML = '<div style="padding: 5px; font-style: italic; color: #666;">No ROS dependencies</div>';
+                return;
+            }
+
+            // Helper to get type label
+            function getTypeLabel(type) {
+                const typeLabels = {
+                    'depend': 'build & runtime',
+                    'exec_depend': 'runtime only',
+                    'test_depend': 'test only',
+                    'buildtool_depend': 'build tool',
+                    'build_depend': 'build only',
+                    'run_depend': 'runtime'
+                };
+                return typeLabels[type] || type;
+            }
+
+            dependencies.forEach(dep => {
+                const depItem = document.createElement('div');
+                depItem.className = 'tree-item ros-dep tree-child';
+                depItem.dataset.packageName = dep.name;
+
+                // Expand icon for nested ROS packages
+                const expandIcon = visitedPackages.has(dep.name)
+                    ? '<span class="expand-icon-disabled" title="Already visited (circular dependency)">●</span>'
+                    : `<span class="expand-icon" data-package="${dep.name}">+</span>`;
+
+                // Repository link
+                let repoLink = '';
+                if (dep.repo_url) {
+                    repoLink = `<a href="${dep.repo_url}" target="_blank" class="repo-link" title="View source repository">📁</a>`;
+                }
+
+                // Distro link
+                let distroLink = '';
+                if (dep.distro_link) {
+                    distroLink = `<a href="${dep.distro_link}" target="_blank" class="distro-link" title="View in ROS Humble distribution">↗</a>`;
+                }
+
+                // Source packages tag (for multi-package repos)
+                let sourceTag = '';
+                if (dep.source_packages && dep.source_packages.length > 0) {
+                    const sourceText = dep.source_packages.join(', ');
+                    sourceTag = `<span class="source-tag" title="Declared in package(s): ${sourceText}">${sourceText}</span>`;
+                }
+
+                depItem.innerHTML = `
+                    <div class="tree-connector"></div>
+                    <div class="tree-dot ros"></div>
+                    <div class="tree-content">
+                        <div class="tree-label-wrapper">
+                            ${expandIcon}
+                            <div class="tree-label">${dep.name}</div>
+                            ${repoLink}
+                            ${distroLink}
+                        </div>
+                        <div class="tree-type">${getTypeLabel(dep.type)}</div>
+                        ${sourceTag}
+                    </div>
+                    <div class="tree-children-container" style="display:none;"></div>
+                `;
+
+                // Add click handler for expand icon if not circular
+                if (!visitedPackages.has(dep.name)) {
+                    const expandIc = depItem.querySelector('.expand-icon');
+                    expandIc.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        toggleExpand(depItem, dep.name);
+                    });
+                }
+
+                container.appendChild(depItem);
+            });
         }
 
         function showLoading(show) {
